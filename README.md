@@ -19,8 +19,7 @@ Plugin_and_Script_Collection/
 
 | 脚本                                     | 说明                                                         | 安装                                                         |
 | ---------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| [toc-reader](./tampermonkey/toc-reader/) | 网页目录阅读器，自动提取 H1~H6 标题生成悬浮目录面板，支持点击跳转、搜索过滤、拖拽移动 | [安装]
-(https://raw.githubusercontent.com/JBC-JJM/Plugin_and_Script_Collection/blob/main/tampermonkey/toc-reader/toc-reader.user.js) |
+| [toc-reader](./tampermonkey/toc-reader/) | 网页目录阅读器，自动提取 H1~H6 标题生成悬浮目录面板，支持点击跳转、搜索过滤、拖拽移动 | [安装](https://raw.githubusercontent.com/JBC-JJM/Plugin_and_Script_Collection/blob/main/tampermonkey/toc-reader/toc-reader.user.js) |
 
 ### AutoHotkey 脚本
 
