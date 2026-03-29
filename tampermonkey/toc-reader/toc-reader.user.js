@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页目录阅读器 (TOC Reader) 
 // @namespace    https://github.com/JBC-JJM/chrome-toc-extension
-// @version      1.9.1
-// @description  自动提取网页标题结构，生成悬浮目录面板，支持点击跳转、折叠展开、拖拽移动、智能主题、独立记忆位置大小、文本格式统一隔离、智能隐藏、SPA单页适配
+// @version      1.9.2
+// @description  自动提取网页标题结构，生成悬浮目录面板，支持点击跳转、拖拽移动、记忆位置大小、智能隐藏防闪烁、边界防越界、SPA适配
 // @author       JBC-JJM
 // @match        *://*/*
 // @grant        GM_addStyle
@@ -26,7 +26,6 @@
   const SIZE_KEY = 'toc_reader_size';
   const TOGGLE_POS_KEY = 'toc_reader_toggle_pos';
   const SITE_VISIBLE_KEY = 'toc_reader_site_visible_';
-  const SCRIPT_VERSION = '1.9.1';
   const EXCLUDED_DOMAINS_KEY = 'toc_reader_excluded_domains';
 
   // ─── 动态存储键（针对当前域名独立记录） ───────────────────────────────────────────
@@ -490,7 +489,7 @@
     panel.innerHTML = '<div class="toc-header" id="toc-drag-handle">' +
       '<div class="toc-header-title"><span style="font-size:14px">\u2630</span> \u76EE\u5F55</div>' +
       '<div class="toc-header-actions">' +
-      '<button class="toc-btn" id="toc-lock-btn" title="\u7981\u6B62\u5728\u672C\u7AD9\u542F\u7528">\uD83D\uDD12</button>' + // 🔒 表示禁止
+      '<button class="toc-btn" id="toc-lock-btn" title="\u7981\u6B62\u5728\u672C\u7AD9\u542F\u7528">\uD83D\uDD12</button>' + 
       '<button class="toc-btn" id="toc-theme-btn" title="\u5207\u6362\u4E3B\u9898">\uD83C\uDF19</button>' +
       '<button class="toc-btn" id="toc-collapse-btn" title="\u6298\u53E0/\u5C55\u5F00">\u25BE</button>' +
       '<button class="toc-btn" id="toc-refresh-btn" title="\u5237\u65B0">\u21BA</button>' +
@@ -628,7 +627,7 @@
     return findParent(treeData, nodeId, []) || [nodeId];
   }
 
-  // 🌟 核心修复1：重构刷新和强制隐藏逻辑
+  // 刷新和智能隐藏逻辑
   function refreshHeadings() {
     var headings = getHeadings();
     var panel = document.getElementById(PANEL_ID);
@@ -661,14 +660,14 @@
 
     if (!visible) {
       panel.classList.add('hidden');
-      toggle.style.display = ''; // 显示悬浮按钮（恢复默认 inline-block）
+      toggle.style.display = ''; // 显示悬浮按钮
     } else {
       panel.classList.remove('hidden');
       toggle.style.display = 'none'; // 隐藏悬浮按钮
     }
   }
 
-  // ─── 拖拽逻辑 ─────────────────────────────────────────────────────────────────
+  // ─── 拖拽与调整大小（增加边界防溢出） ──────────────────────────────────────────────
   function enableDrag(panel, handle) {
     var dragging = false, ox = 0, oy = 0;
     handle.addEventListener('mousedown', function (e) {
@@ -714,7 +713,23 @@
       if (!resizing) return;
       resizing = false;
       GM_setValue(getSiteSizeKey(), { width: panel.style.width, height: panel.style.height });
+      clampPanelPosition(panel); // 调整大小后检查是否越界
     });
+  }
+
+  // 防止面板越界跑出屏幕
+  function clampPanelPosition(panel) {
+    if (panel.classList.contains('hidden')) return;
+    var rect = panel.getBoundingClientRect();
+    if (rect.width === 0) return;
+    var newLeft = Math.max(0, Math.min(window.innerWidth - rect.width, rect.left));
+    var newTop = Math.max(0, Math.min(window.innerHeight - rect.height, rect.top));
+    if (newLeft !== rect.left || newTop !== rect.top) {
+        panel.style.left = newLeft + 'px';
+        panel.style.top = newTop + 'px';
+        // 同步更新保存的位置
+        GM_setValue(getSitePositionKey(), { left: newLeft, top: newTop });
+    }
   }
 
   // ─── 滚动高亮 + 自动展开 ──────────────────────────────────────────────────────
@@ -846,11 +861,10 @@
     var dragging = false, hasMoved = false, startX = 0, startY = 0, startTop = 0;
     var savedPos = GM_getValue(TOGGLE_POS_KEY, null);
     if (savedPos) {
-      var top = parseInt(savedPos.top);
-      if (!isNaN(top) && top >= 0 && top <= window.innerHeight) {
-        btn.style.top = savedPos.top + 'px';
-        btn.style.right = savedPos.right + 'px';
-      }
+      var tTop = parseInt(savedPos.top);
+      var safeTTop = Math.max(0, Math.min(window.innerHeight - 50, tTop));
+      btn.style.top = safeTTop + 'px';
+      btn.style.right = savedPos.right + 'px';
     }
     btn.addEventListener('mousedown', function (e) {
       dragging = true; hasMoved = false;
@@ -888,26 +902,34 @@
     var panel = buildPanel();
     var toggle = buildToggleBtn();
     
-    // 默认给 toggle 加上隐藏，这样在未加载完时不会闪烁出现
+    // 🌟核心修复1：在将其添加到网页之前，就强制设置为隐藏！
+    // 这样在 refreshHeadings 计算完毕之前，绝对不会出现“闪现一下再缩回去”的情况。
+    panel.classList.add('hidden');
     toggle.style.display = 'none';
     
     document.body.appendChild(panel);
     document.body.appendChild(toggle);
 
-    // 载入本站独立记录的位置和大小
-    var savedPos = GM_getValue(getSitePositionKey(), null);
-    if (savedPos) {
-      panel.style.left = savedPos.left + 'px';
-      panel.style.top = savedPos.top + 'px';
-      panel.style.right = 'auto';
-    }
+    // 载入本站独立记录的大小
     var savedSize = GM_getValue(getSiteSizeKey(), null);
     if (savedSize) {
       if (savedSize.width) panel.style.width = savedSize.width;
       if (savedSize.height) panel.style.height = savedSize.height;
     }
 
-    // 初始化时交由 refreshHeadings 控制面板显示隐藏逻辑
+    // 🌟核心修复2：加载本站记录的位置时，加入防越界计算（Clamp）
+    var savedPos = GM_getValue(getSitePositionKey(), null);
+    if (savedPos) {
+      var pWidth = parseInt(panel.style.width) || 280;
+      var pHeight = parseInt(panel.style.height) || (window.innerHeight * 0.6);
+      var safeLeft = Math.max(0, Math.min(window.innerWidth - pWidth, parseInt(savedPos.left)));
+      var safeTop = Math.max(0, Math.min(window.innerHeight - pHeight, parseInt(savedPos.top)));
+      panel.style.left = safeLeft + 'px';
+      panel.style.top = safeTop + 'px';
+      panel.style.right = 'auto';
+    }
+
+    // 初始化显示控制
     refreshHeadings();
     
     enableDrag(panel, document.getElementById('toc-drag-handle'));
@@ -916,7 +938,11 @@
     setTheme(GM_getValue(THEME_KEY, 'auto'), false);
     initThemeListener();
 
-    // 绑定禁止本站按钮事件 (锁按钮)
+    // 监听窗口大小变化：当用户缩小浏览器时，把面板强行挤到可视范围内
+    window.addEventListener('resize', function() {
+        clampPanelPosition(panel);
+    });
+
     document.getElementById('toc-lock-btn').addEventListener('click', function () {
       addExcludedDomain(location.hostname);
       document.getElementById(PANEL_ID).remove();
@@ -962,19 +988,16 @@
 
     enableToggleDrag(toggle);
 
-    // 🌟 核心修复2：全方位 SPA 路由劫持（专治 GitHub 的局部刷新）
+    // 全方位 SPA 路由劫持
     var handleSPA = function() {
-      // 局部刷新需要时间渲染 DOM，所以设定延迟拉取
       setTimeout(refreshHeadings, 800);
-      setTimeout(refreshHeadings, 2000); // 慢网兜底
+      setTimeout(refreshHeadings, 2000); 
     };
 
-    // GitHub 和部分现代网站的专属事件
     document.addEventListener("turbo:render", handleSPA);
     document.addEventListener("turbo:load", handleSPA);
     document.addEventListener("pjax:end", handleSPA);
 
-    // 通用 History 路由劫持
     var originalPushState = history.pushState;
     history.pushState = function() {
         originalPushState.apply(this, arguments);
@@ -987,7 +1010,6 @@
     };
     window.addEventListener('popstate', handleSPA);
 
-    // 经典 MutationObserver 备用
     var lastUrl = location.href;
     new MutationObserver(function () {
       if (location.href !== lastUrl) { 
