@@ -131,6 +131,10 @@
       pointer-events: none;\n\
       transform: translateX(24px) scale(0.97);\n\
     }\n\
+    #' + PANEL_ID + '.temp-expanded {\n\
+      opacity: 0.82;\n\
+      backdrop-filter: blur(2px);\n\
+    }\n\
 \n\
     /* ── 深色主题 ── */\n\
     #' + PANEL_ID + '[colorscheme="dark"] {\n\
@@ -980,13 +984,53 @@
 
     toggle.addEventListener('click', function () {
       if (toggle.classList.contains('was-dragged')) { toggle.classList.remove('was-dragged'); return; }
+      tempExpanded = false;
+      clearTimeout(tempHideTimer);
       panel.classList.remove('hidden');
+      panel.classList.remove('temp-expanded');
       toggle.style.display = 'none';
       GM_setValue(siteKey, true);
       refreshHeadings();
     });
 
     enableToggleDrag(toggle);
+
+    // ─── 悬浮临时展开 ──────────────────────────────────────────────────────────
+    var tempExpanded = false;
+    var tempHideTimer = null;
+
+    function startTempHide() {
+      clearTimeout(tempHideTimer);
+      tempHideTimer = setTimeout(function () {
+        if (tempExpanded) {
+          tempExpanded = false;
+          panel.classList.add('hidden');
+          panel.classList.remove('temp-expanded');
+        }
+      }, 300);
+    }
+
+    toggle.addEventListener('mouseenter', function () {
+      clearTimeout(tempHideTimer);
+      if (panel.classList.contains('hidden')) {
+        tempExpanded = true;
+        panel.classList.remove('hidden');
+        panel.classList.add('temp-expanded');
+        // 不隐藏 toggle，保持可见以便鼠标可以滑入面板
+      }
+    });
+
+    toggle.addEventListener('mouseleave', function () {
+      if (tempExpanded) startTempHide();
+    });
+
+    panel.addEventListener('mouseenter', function () {
+      clearTimeout(tempHideTimer);
+    });
+
+    panel.addEventListener('mouseleave', function () {
+      if (tempExpanded) startTempHide();
+    });
 
     // 全方位 SPA 路由劫持
     var handleSPA = function() {

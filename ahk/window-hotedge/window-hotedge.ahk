@@ -63,23 +63,23 @@ IsAtTopEdge() => (MouseGetPos(,&y), y <= 3)
 ; --- 4. 功能映射区 ---
 
 ; 【任务栏左侧 3/4】：滚动切换虚拟桌面
-#HotIf IsTaskbarLeftThreeFourths()
-WheelDown::Send "^#{Right}"
-WheelUp::Send "^#{Left}"
-MButton::Send "#{Tab}" 
-#HotIf
+; #HotIf IsTaskbarLeftThreeFourths()
+; WheelDown::Send "^#{Right}"
+; WheelUp::Send "^#{Left}"
+; MButton::Send "#{Tab}" 
+; #HotIf
 
 ; 【任务栏右侧 1/4】：滚动切换 Web 标签页 (Ctrl + Tab)
-#HotIf IsTaskbarRightFourth()
-WheelDown::Send "^{Tab}"
-WheelUp::Send "^+{Tab}"
-#HotIf
+; #HotIf IsTaskbarRightFourth()
+; WheelDown::Send "^{Tab}"
+; WheelUp::Send "^+{Tab}"
+; #HotIf
 
 ; 【右边缘下半部】 & 【顶部边缘左半部】：滚动切换标签页
-#HotIf (IsAtRightEdge() && (MouseGetPos(,&y), y > A_ScreenHeight / 2)) || (IsAtTopEdge() && (MouseGetPos(&x), x < A_ScreenWidth / 2))
-WheelDown::Send "^{Tab}"
-WheelUp::Send "^+{Tab}"
-#HotIf
+; #HotIf (IsAtRightEdge() && (MouseGetPos(,&y), y > A_ScreenHeight / 2)) || (IsAtTopEdge() && (MouseGetPos(&x), x < A_ScreenWidth / 2))
+; WheelDown::Send "^{Tab}"
+; WheelUp::Send "^+{Tab}"
+; #HotIf
 
 ; 【右边缘上半部】：滚动调节音量
 #HotIf IsAtRightEdge() && (MouseGetPos(,&y), y <= A_ScreenHeight / 2)
