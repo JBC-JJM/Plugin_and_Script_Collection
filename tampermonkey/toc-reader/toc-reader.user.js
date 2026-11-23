@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页目录阅读器 (TOC Reader) 
 // @namespace    https://github.com/JBC-JJM/chrome-toc-extension
-// @version      1.9.2
-// @description  自动提取网页标题结构，生成悬浮目录面板，支持点击跳转、拖拽移动、记忆位置大小、智能隐藏防闪烁、边界防越界、SPA适配
+// @version      1.10.0
+// @description  自动提取网页标题结构，生成悬浮目录面板，支持点击跳转、拖拽移动、记忆位置大小、窗口缩放跟随定位、智能隐藏防闪烁、边界防越界、SPA适配
 // @author       JBC-JJM
 // @match        *://*/*
 // @grant        GM_addStyle
@@ -22,7 +22,8 @@
   const TOGGLE_ID = 'toc-reader-toggle';
   const STORAGE_KEY = 'toc_reader_visible';
   const THEME_KEY = 'toc_reader_theme';
-  const POSITION_KEY = 'toc_reader_position';
+  const POSITION_KEY = 'toc_reader_position'; // 旧版绝对像素位置，仅用于迁移
+  const ANCHOR_KEY = 'toc_reader_anchor';
   const SIZE_KEY = 'toc_reader_size';
   const TOGGLE_POS_KEY = 'toc_reader_toggle_pos';
   const SITE_VISIBLE_KEY = 'toc_reader_site_visible_';
@@ -30,6 +31,7 @@
 
   // ─── 动态存储键（针对当前域名独立记录） ───────────────────────────────────────────
   function getSitePositionKey() { return POSITION_KEY + '_' + location.hostname; }
+  function getSiteAnchorKey() { return ANCHOR_KEY + '_' + location.hostname; }
   function getSiteSizeKey() { return SIZE_KEY + '_' + location.hostname; }
   function getSiteVisibleKey() { return SITE_VISIBLE_KEY + location.hostname; }
 
@@ -111,7 +113,7 @@
       height: 60%;\n\
       min-width: 200px;\n\
       min-height: 200px;\n\
-      max-width: 520px;\n\
+      max-width: min(520px, 92vw);\n\
       max-height: 90vh;\n\
       z-index: 999998;\n\
       background: var(--toc-bg, #ffffff);\n\
@@ -684,8 +686,9 @@
     });
     document.addEventListener('mousemove', function (e) {
       if (!dragging) return;
-      var x = Math.max(0, Math.min(window.innerWidth - panel.offsetWidth, e.clientX - ox));
-      var y = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, e.clientY - oy));
+      var w = panel.offsetWidth, h = panel.offsetHeight;
+      var x = Math.max(0, Math.min(Math.max(0, window.innerWidth - w), e.clientX - ox));
+      var y = Math.max(0, Math.min(Math.max(0, window.innerHeight - h), e.clientY - oy));
       panel.style.left = x + 'px';
       panel.style.top = y + 'px';
       panel.style.right = 'auto';
@@ -693,8 +696,8 @@
     document.addEventListener('mouseup', function () {
       if (!dragging) return;
       dragging = false;
-      var rect = panel.getBoundingClientRect();
-      GM_setValue(getSitePositionKey(), { left: rect.left, top: rect.top });
+      // 用户主动拖拽才更新锚点
+      saveAnchor(panel);
     });
   }
 
@@ -717,23 +720,102 @@
       if (!resizing) return;
       resizing = false;
       GM_setValue(getSiteSizeKey(), { width: panel.style.width, height: panel.style.height });
-      clampPanelPosition(panel); // 调整大小后检查是否越界
+      // 尺寸变了，锚点间距随之变化，重新记录一次（避免放大后贴边间距偏移）
+      saveAnchor(panel);
+      applyAnchor(panel, computeAnchor(panel));
     });
   }
 
-  // 防止面板越界跑出屏幕
+  // ─── 位置锚定：记录“离视口最近的那条边有多远”，窗口缩放时自动跟随 ─────────────────
+  //
+  // 旧版把面板位置当绝对像素存（left/top），浏览器窗口一变大，面板还停在小窗口时的
+  // 像素坐标上，于是看起来跑到界面中间偏左。改成锚点后：
+  //   - 面板贴近右边 → 记 right 间距，放大后仍贴着右边
+  //   - 面板贴近左边 → 记 left  间距，放大后仍贴着左边
+  //   - 垂直方向同理（top / bottom）
+  // 只有用户主动拖拽/缩放面板时才更新锚点；窗口变化导致的位置修正不回写，
+  // 这样小窗口里被挤进来的位置不会污染记录，放大后能回到原本贴边的位置。
+
+  function readPanelRect(panel) {
+    var r = panel.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  }
+
+  function computeAnchor(panel) {
+    var r = readPanelRect(panel);
+    if (!r.width || !r.height) return null;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var fromLeft = Math.max(0, Math.round(r.left));
+    var fromRight = Math.max(0, Math.round(vw - r.left - r.width));
+    var fromTop = Math.max(0, Math.round(r.top));
+    var fromBottom = Math.max(0, Math.round(vh - r.top - r.height));
+    var useLeft = fromLeft <= fromRight;
+    var useTop = fromTop <= fromBottom;
+    return {
+      x: useLeft ? 'left' : 'right',
+      ax: useLeft ? fromLeft : fromRight,
+      y: useTop ? 'top' : 'bottom',
+      ay: useTop ? fromTop : fromBottom
+    };
+  }
+
+  function saveAnchor(panel) {
+    var anchor = computeAnchor(panel);
+    if (anchor) GM_setValue(getSiteAnchorKey(), anchor);
+    return anchor;
+  }
+
+  // 按锚点摆位；只写样式，不回写存档（这是不污染记录的关键）
+  function applyAnchor(panel, anchor) {
+    if (!panel || !anchor || !anchor.x || !anchor.y) return;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var w = panel.offsetWidth, h = panel.offsetHeight;
+    if (!w || !h) return;
+    var ax = parseInt(anchor.ax, 10) || 0;
+    var ay = parseInt(anchor.ay, 10) || 0;
+
+    var left = anchor.x === 'right' ? vw - ax - w : ax;
+    var top = anchor.y === 'bottom' ? vh - ay - h : ay;
+
+    // 视口装不下时收进可视区，但锚点保持原值，窗口放大后自动回到原来的贴边位置
+    left = Math.max(0, Math.min(Math.max(0, vw - w), left));
+    top = Math.max(0, Math.min(Math.max(0, vh - h), top));
+
+    panel.style.left = Math.round(left) + 'px';
+    panel.style.top = Math.round(top) + 'px';
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+  }
+
+  // 老存档（绝对像素 left/top）→ 锚点，只在没有锚点记录时跑一次
+  function migrateLegacyPosition(panel, savedPos) {
+    if (!savedPos) return null;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var w = panel.offsetWidth || 280;
+    var h = panel.offsetHeight || (vh * 0.6);
+    var savedLeft = Math.max(0, Math.min(Math.max(0, vw - w), parseInt(savedPos.left, 10) || 0));
+    var savedTop = Math.max(0, Math.min(Math.max(0, vh - h), parseInt(savedPos.top, 10) || 0));
+    panel.style.left = savedLeft + 'px';
+    panel.style.top = savedTop + 'px';
+    panel.style.right = 'auto';
+    return saveAnchor(panel);
+  }
+
+  // 保留旧函数名（其他地方可能引用）：现在只做纯位置修正，不再回写存档
   function clampPanelPosition(panel) {
-    if (panel.classList.contains('hidden')) return;
-    var rect = panel.getBoundingClientRect();
-    if (rect.width === 0) return;
-    var newLeft = Math.max(0, Math.min(window.innerWidth - rect.width, rect.left));
-    var newTop = Math.max(0, Math.min(window.innerHeight - rect.height, rect.top));
-    if (newLeft !== rect.left || newTop !== rect.top) {
-        panel.style.left = newLeft + 'px';
-        panel.style.top = newTop + 'px';
-        // 同步更新保存的位置
-        GM_setValue(getSitePositionKey(), { left: newLeft, top: newTop });
+    if (!panel) return;
+    var anchor = GM_getValue(getSiteAnchorKey(), null);
+    if (anchor) {
+      applyAnchor(panel, anchor);
+      return;
     }
+    var rect = panel.getBoundingClientRect();
+    if (!rect.width) return;
+    var newLeft = Math.max(0, Math.min(Math.max(0, window.innerWidth - rect.width), rect.left));
+    var newTop = Math.max(0, Math.min(Math.max(0, window.innerHeight - rect.height), rect.top));
+    panel.style.left = Math.round(newLeft) + 'px';
+    panel.style.top = Math.round(newTop) + 'px';
+    panel.style.right = 'auto';
   }
 
   // ─── 滚动高亮 + 自动展开 ──────────────────────────────────────────────────────
@@ -863,13 +945,26 @@
   // ─── 悬浮按钮拖拽 ───────────────────────────────────────────────────────────
   function enableToggleDrag(btn) {
     var dragging = false, hasMoved = false, startX = 0, startY = 0, startTop = 0;
-    var savedPos = GM_getValue(TOGGLE_POS_KEY, null);
-    if (savedPos) {
-      var tTop = parseInt(savedPos.top);
-      var safeTTop = Math.max(0, Math.min(window.innerHeight - 50, tTop));
-      btn.style.top = safeTTop + 'px';
-      btn.style.right = savedPos.right + 'px';
+
+    // 悬浮按钮只记录垂直位置；水平方向恒定贴右边缘（CSS right:0），
+    // 这样窗口左右缩放时按钮永远跟着右边缘走，不会留在旧像素位置。
+    function applyTogglePos() {
+      var savedPos = GM_getValue(TOGGLE_POS_KEY, null);
+      var tTop = savedPos ? parseInt(savedPos.top, 10) : NaN;
+      var maxTop = Math.max(0, window.innerHeight - btn.offsetHeight);
+      if (isNaN(tTop)) {
+        btn.style.top = Math.round(window.innerHeight / 2) + 'px';
+        btn.style.transform = 'translateY(-50%)';
+        btn.style.right = '0px';
+        return;
+      }
+      btn.style.transform = 'none';
+      btn.style.right = '0px';
+      btn.style.top = Math.max(0, Math.min(maxTop, tTop)) + 'px';
     }
+    applyTogglePos();
+    window.addEventListener('resize', function () { applyTogglePos(); });
+
     btn.addEventListener('mousedown', function (e) {
       dragging = true; hasMoved = false;
       startX = e.clientX; startY = e.clientY;
@@ -882,7 +977,7 @@
       var dx = e.clientX - startX, dy = e.clientY - startY;
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasMoved = true;
       if (!hasMoved) return;
-      btn.style.top = Math.max(0, Math.min(window.innerHeight - btn.offsetHeight, startTop + dy)) + 'px';
+      btn.style.top = Math.max(0, Math.min(Math.max(0, window.innerHeight - btn.offsetHeight), startTop + dy)) + 'px';
       btn.style.transform = 'none';
     });
     document.addEventListener('mouseup', function () {
@@ -891,7 +986,7 @@
       btn.classList.remove('dragging');
       if (hasMoved) {
         btn.classList.add('was-dragged');
-        GM_setValue(TOGGLE_POS_KEY, { top: btn.style.top, right: btn.style.right });
+        GM_setValue(TOGGLE_POS_KEY, { top: btn.style.top, right: '0px' });
       }
     });
   }
@@ -921,16 +1016,14 @@
       if (savedSize.height) panel.style.height = savedSize.height;
     }
 
-    // 🌟核心修复2：加载本站记录的位置时，加入防越界计算（Clamp）
-    var savedPos = GM_getValue(getSitePositionKey(), null);
-    if (savedPos) {
-      var pWidth = parseInt(panel.style.width) || 280;
-      var pHeight = parseInt(panel.style.height) || (window.innerHeight * 0.6);
-      var safeLeft = Math.max(0, Math.min(window.innerWidth - pWidth, parseInt(savedPos.left)));
-      var safeTop = Math.max(0, Math.min(window.innerHeight - pHeight, parseInt(savedPos.top)));
-      panel.style.left = safeLeft + 'px';
-      panel.style.top = safeTop + 'px';
-      panel.style.right = 'auto';
+    // 🌟位置：优先用“离视口的锚点”，老存档自动迁移一次
+    // 面板此刻仍带 .hidden（opacity:0 但参与布局），offsetWidth/Height 可正常读取
+    var anchor = GM_getValue(getSiteAnchorKey(), null);
+    if (anchor) {
+      applyAnchor(panel, anchor);
+    } else {
+      anchor = migrateLegacyPosition(panel, GM_getValue(getSitePositionKey(), null));
+      if (!anchor) applyAnchor(panel, { x: 'right', ax: 16, y: 'top', ay: 60 }); // 默认右上
     }
 
     // 初始化显示控制
@@ -942,9 +1035,15 @@
     setTheme(GM_getValue(THEME_KEY, 'auto'), false);
     initThemeListener();
 
-    // 监听窗口大小变化：当用户缩小浏览器时，把面板强行挤到可视范围内
-    window.addEventListener('resize', function() {
-        clampPanelPosition(panel);
+    // 监听窗口大小变化：按锚点重新贴边，而不是把小窗口里的像素坐标固化下来
+    var resizeRaf = null;
+    window.addEventListener('resize', function () {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(function () {
+        resizeRaf = null;
+        var a = GM_getValue(getSiteAnchorKey(), null);
+        if (a) applyAnchor(panel, a); else clampPanelPosition(panel);
+      });
     });
 
     document.getElementById('toc-lock-btn').addEventListener('click', function () {
